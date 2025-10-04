@@ -198,7 +198,7 @@ def hsv_to_rgb(h, s, v):
 def simulate_lighting(variables):
     """Simulate twinkling lights effect (used for stars, Christmas lights, etc)."""
     intensity = safe_led_limit(variables.get("intensity", 10))
-    max_active_leds = variables.get("max_active_leds", 5)
+    max_active_leds = safe_led_limit(variables.get("max_active_leds", 5))
     fade_speed = LIGHTING_FADE_SPEED
     min_burn_time = LIGHTING_MIN_BURN_TIME
     max_burn_time = LIGHTING_MAX_BURN_TIME
@@ -291,9 +291,9 @@ def simulate_day(variables):
     white_weight /= total_weight
     yellow_weight /= total_weight
 
-    variables["max_active_leds"] = int(
+    variables["max_active_leds"] = safe_led_limit(int(
         DAY_MIN_LEDS + (DAY_MAX_LEDS - DAY_MIN_LEDS) * (1 - cloud_percentage / 100)
-    )
+    ))
 
     variables["intensity"] = CHRISTMAS_INTENSITY  # Reuse same intensity value
     variables["colors"] = [COLOR_YELLOW, COLOR_LIGHT_GREY]
