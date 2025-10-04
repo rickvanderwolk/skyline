@@ -1,2 +1,8 @@
 .idea
 .DS_store
+.env
+weather_cache.json
+__pycache__/
+*.pyc
+venv/
+*.log

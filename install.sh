@@ -10,7 +10,16 @@ python3 -m venv venv
 
 source venv/bin/activate
 
-pip install rpi_ws281x adafruit-circuitpython-neopixel requests
+pip install -r requirements.txt
 
-echo "De installatie is voltooid. Activeer de virtual environment met:"
+# Create .env file if it doesn't exist
+if [ ! -f .env ]; then
+    cp .env.example .env
+    echo ""
+    echo "Created .env file. Please edit it and add your OpenWeather API key:"
+    echo "nano .env"
+fi
+
+echo ""
+echo "Installation complete. Activate the virtual environment with:"
 echo "source ~/rpi_ws281x_env/venv/bin/activate"

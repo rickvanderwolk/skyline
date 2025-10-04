@@ -10,21 +10,28 @@ import datetime
 import os
 import json
 import copy
+import logging
 
-MATRIX_WIDTH = 32
-MATRIX_HEIGHT = 8
-NUM_LEDS = MATRIX_WIDTH * MATRIX_HEIGHT
+from config import (
+    MATRIX_WIDTH, MATRIX_HEIGHT, NUM_LEDS, SAFE_MAX_LEDS,
+    WEATHER_UPDATE_INTERVAL, OPEN_WEATHER_API_BASE_URL,
+    OPEN_WEATHER_API_CITY, OPEN_WEATHER_API_KEY, CACHE_FILE,
+    DEFAULT_BRIGHTNESS
+)
+from constants import *
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 DATA_PIN = board.D18
-SAFE_MAX_LEDS = int(NUM_LEDS * 0.25)
-WEATHER_UPDATE_INTERVAL = 300
-OPEN_WEATHER_API_BASE_URL = "https://api.openweathermap.org/data/2.5/weather?"
-OPEN_WEATHER_API_CITY = "<your-city>"
-OPEN_WEATHER_API_KEY = "<your-open-weather-api-key>"
-CACHE_FILE = "weather_cache.json"
-
-pixels = neopixel.NeoPixel(DATA_PIN, NUM_LEDS, auto_write=False, brightness=0.25)
+pixels = neopixel.NeoPixel(DATA_PIN, NUM_LEDS, auto_write=False, brightness=DEFAULT_BRIGHTNESS)
 current_effect_thread = None
 current_effect_name = None
+current_variables = {}
 stop_event = threading.Event()
 last_weather_update = 0
 
@@ -37,30 +44,26 @@ def get_led_index(x, y):
 def safe_led_limit(requested_leds):
     return min(SAFE_MAX_LEDS, max(0, requested_leds))
 
-def fade_out_all(steps=50, delay=0.02):
-    print("Fading out all LEDs...")
+def fade_out_all(steps=FADE_OUT_STEPS, delay=FADE_OUT_DELAY):
+    """Fade out all LEDs gradually."""
+    logger.debug("Fading out all LEDs...")
     for step in range(steps):
         for i in range(NUM_LEDS):
             r, g, b = pixels[i]
-            pixels[i] = (int(r * (1 - step / steps)), int(g * (1 - step / steps)), int(b * (1 - step / steps)))
+            fade_factor = 1 - step / steps
+            pixels[i] = (
+                int(r * fade_factor),
+                int(g * fade_factor),
+                int(b * fade_factor)
+            )
         pixels.show()
         time.sleep(delay)
 
-def simulate_christmas(variables):
-    min_leds = 5
-    max_leds = safe_led_limit(15)
-    active_leds = {}
-
-    print(f"Simulating Christmas with min {min_leds}, max {max_leds} LEDs")
-
-    while not stop_event.is_set():
-        update_leds(active_leds, min_leds, max_leds, lambda: choice([(255, 0, 0), (0, 255, 0)]), batch_size=8)
-        time.sleep(0.1)
-
 def simulate_rain(variables):
+    """Simulate rain effect with optional thunder."""
     intensity = safe_led_limit(variables.get("intensity", 50))
     thunder_probability = variables.get("thunder_probability", 5)
-    print(f"Simulating rain met intensity {intensity} en thunder_probability {thunder_probability}")
+    logger.info(f"Simulating rain with intensity {intensity} and thunder_probability {thunder_probability}")
 
     raindrops = [
         (randint(0, MATRIX_WIDTH - 1), randint(0, MATRIX_HEIGHT - 1))
@@ -74,36 +77,45 @@ def simulate_rain(variables):
         for x, y in raindrops:
             if y + 1 < MATRIX_HEIGHT:
                 index = get_led_index(x, y + 1)
-                pixels[index] = (randint(0, 5), randint(0, 5), randint(50, 255))
+                pixels[index] = (
+                    randint(RAIN_OTHER_MIN, RAIN_OTHER_MAX),
+                    randint(RAIN_OTHER_MIN, RAIN_OTHER_MAX),
+                    randint(RAIN_BLUE_MIN, RAIN_BLUE_MAX)
+                )
                 new_raindrops.append((x, y + 1))
             else:
                 index = get_led_index(x, 0)
-                pixels[index] = (randint(0, 5), randint(0, 5), randint(50, 255))
+                pixels[index] = (
+                    randint(RAIN_OTHER_MIN, RAIN_OTHER_MAX),
+                    randint(RAIN_OTHER_MIN, RAIN_OTHER_MAX),
+                    randint(RAIN_BLUE_MIN, RAIN_BLUE_MAX)
+                )
                 new_raindrops.append((randint(0, MATRIX_WIDTH - 1), 0))
 
         raindrops = new_raindrops
 
-        if variables.get("weather_condition") == "Thunder" and random.randint(1, 250) == 1:
-            print("Thunderstorm flash!")
-            for _ in range(random.randint(3, 7)):
-                flash_leds = random.sample(range(NUM_LEDS), random.randint(int(NUM_LEDS * 0.5), NUM_LEDS))
+        if variables.get("weather_condition") == "Thunder" and random.randint(1, THUNDER_CHANCE) == 1:
+            logger.debug("Thunderstorm flash!")
+            for _ in range(random.randint(THUNDER_MIN_FLASHES, THUNDER_MAX_FLASHES)):
+                flash_leds = random.sample(
+                    range(NUM_LEDS),
+                    random.randint(int(NUM_LEDS * 0.5), NUM_LEDS)
+                )
                 for i in range(NUM_LEDS):
-                    if i in flash_leds:
-                        pixels[i] = (255, 255, 255)
-                    else:
-                        pixels[i] = (0, 0, 0)
+                    pixels[i] = COLOR_WHITE if i in flash_leds else (0, 0, 0)
                 pixels.show()
-                time.sleep(random.uniform(0.05, 0.2))
+                time.sleep(random.uniform(THUNDER_MIN_FLASH_DURATION, THUNDER_MAX_FLASH_DURATION))
                 pixels.fill((0, 0, 0))
                 pixels.show()
-                time.sleep(random.uniform(0.1, 0.5))
+                time.sleep(random.uniform(THUNDER_MIN_PAUSE, THUNDER_MAX_PAUSE))
 
         pixels.show()
-        time.sleep(0.1)
+        time.sleep(RAIN_UPDATE_DELAY)
 
 def simulate_snow(variables):
+    """Simulate falling snow effect."""
     intensity = safe_led_limit(variables.get("intensity", 30))
-    print(f"Simulating snow with intensity {intensity}")
+    logger.info(f"Simulating snow with intensity {intensity}")
     snowflakes = []
     active_columns = set()
 
@@ -121,32 +133,35 @@ def simulate_snow(variables):
         for x, y in snowflakes:
             if y < MATRIX_HEIGHT - 1:
                 index = get_led_index(x, y)
-                pixels[index] = (255, 255, 255)
+                pixels[index] = COLOR_WHITE
                 new_snowflakes.append((x, y + 1))
             else:
                 index = get_led_index(x, y)
-                pixels[index] = (255, 255, 255)
+                pixels[index] = COLOR_WHITE
                 active_columns.discard(x)
 
         snowflakes = new_snowflakes
         pixels.show()
-        time.sleep(0.2)
+        time.sleep(SNOW_FALL_DELAY)
 
 def simulate_fireworks(variables):
+    """Simulate colorful fireworks effect."""
     intensity = safe_led_limit(variables.get("intensity", 30))
     max_leds = safe_led_limit(int(NUM_LEDS))
-    active_leds = 0
-    print(f"Simulating fireworks with intensity {intensity}")
-    print(f"Simulating max leds {max_leds}")
+    logger.info(f"Simulating fireworks with intensity {intensity}, max LEDs {max_leds}")
 
     while not stop_event.is_set():
-        active_leds = sum(1 for r, g, b in pixels if r > 0 or g > 0 or b > 0)
-
+        # Fade out existing LEDs
         for i in range(NUM_LEDS):
             r, g, b = pixels[i]
-            if r > 0 or g > 0 or b > 0:
-                active_leds -= 1
-            pixels[i] = (max(0, r - 15), max(0, g - 20), max(0, b - 20))
+            pixels[i] = (
+                max(0, r - FIREWORKS_FADE_R),
+                max(0, g - FIREWORKS_FADE_G),
+                max(0, b - FIREWORKS_FADE_B)
+            )
+
+        # Count active LEDs after fading
+        active_leds = sum(1 for r, g, b in pixels if r > 0 or g > 0 or b > 0)
 
         if active_leds < max_leds and random.randint(0, 100) < intensity:
             index = random.randint(0, NUM_LEDS - 1)
@@ -154,10 +169,9 @@ def simulate_fireworks(variables):
                 hue = random.random()
                 r, g, b = hsv_to_rgb(hue, 1.0, 255)
                 pixels[index] = (int(r), int(g), int(b))
-                active_leds += 1
 
         pixels.show()
-        time.sleep(0.05)
+        time.sleep(FIREWORKS_UPDATE_DELAY)
 
 def hsv_to_rgb(h, s, v):
     if s == 0.0:
@@ -182,12 +196,13 @@ def hsv_to_rgb(h, s, v):
         return (v, p, q)
 
 def simulate_lighting(variables):
+    """Simulate twinkling lights effect (used for stars, Christmas lights, etc)."""
     intensity = safe_led_limit(variables.get("intensity", 10))
     max_active_leds = variables.get("max_active_leds", 5)
-    fade_speed = 0.5
-    min_burn_time = 10
-    max_burn_time = 30
-    colors = variables.get("colors", [(255, 255, 255)])
+    fade_speed = LIGHTING_FADE_SPEED
+    min_burn_time = LIGHTING_MIN_BURN_TIME
+    max_burn_time = LIGHTING_MAX_BURN_TIME
+    colors = variables.get("colors", [COLOR_WHITE])
     color_weights = variables.get("color_weights", [100 / len(colors)] * len(colors))
 
     if len(colors) != len(color_weights):
@@ -198,9 +213,8 @@ def simulate_lighting(variables):
     led_states = ["off"] * NUM_LEDS
     led_colors = [(0, 0, 0)] * NUM_LEDS
 
-    print(f"Simulating lighting with intensity {intensity}")
-    print(f"Max active LEDs: {max_active_leds}")
-    print(f"Available colors: {colors} with weights {color_weights}")
+    logger.info(f"Simulating lighting with intensity {intensity}, max active LEDs: {max_active_leds}")
+    logger.debug(f"Available colors: {colors} with weights {color_weights}")
 
     while not stop_event.is_set():
         active_leds = sum(1 for state in led_states if state != "off")
@@ -241,27 +255,33 @@ def simulate_lighting(variables):
                 led_colors[index] = random.choices(colors, weights=color_weights, k=1)[0]
 
         pixels.show()
-        time.sleep(0.05)
+        time.sleep(LIGHTING_UPDATE_DELAY)
 
 def simulate_christmas(variables):
+    """Simulate Christmas lights effect with red and green colors."""
     variables = {
-        "intensity": 100,
-        "max_active_leds": 7,
-        "colors": [(255, 0, 0), (0, 255, 0)],
-        "color_weights": [60, 40]
+        "intensity": CHRISTMAS_INTENSITY,
+        "max_active_leds": CHRISTMAS_MAX_LEDS,
+        "colors": [COLOR_RED, COLOR_GREEN],
+        "color_weights": [CHRISTMAS_RED_WEIGHT, CHRISTMAS_GREEN_WEIGHT]
     }
     simulate_lighting(variables)
 
 def simulate_night(variables):
+    """Simulate night sky with stars."""
     variables = {
-        "intensity": 100,
-        "max_active_leds": 5,
-        "colors": [(0, 0, 20), (0, 0, 40), (0, 0, 100), (0, 0, 255), (50, 0, 50), (255, 255, 255)],
-        "color_weights": [15, 15, 15, 20, 30, 5]
+        "intensity": NIGHT_INTENSITY,
+        "max_active_leds": NIGHT_MAX_LEDS,
+        "colors": [
+            COLOR_DARK_BLUE_1, COLOR_DARK_BLUE_2, COLOR_DARK_BLUE_3,
+            COLOR_DARK_BLUE_4, COLOR_PURPLE, COLOR_WHITE
+        ],
+        "color_weights": NIGHT_COLOR_WEIGHTS
     }
     simulate_lighting(variables)
 
 def simulate_day(variables):
+    """Simulate daytime sky with sun and clouds based on cloud percentage."""
     cloud_percentage = variables.get("cloud_percentage", 0)
 
     white_weight = max(0.01, cloud_percentage / 100)
@@ -271,15 +291,18 @@ def simulate_day(variables):
     white_weight /= total_weight
     yellow_weight /= total_weight
 
-    variables["max_active_leds"] = int(20 + (50 - 20) * (1 - cloud_percentage / 100))
+    variables["max_active_leds"] = int(
+        DAY_MIN_LEDS + (DAY_MAX_LEDS - DAY_MIN_LEDS) * (1 - cloud_percentage / 100)
+    )
 
-    variables["intensity"] = 100
-    variables["colors"] = [(255, 223, 0), (200, 200, 200)]
+    variables["intensity"] = CHRISTMAS_INTENSITY  # Reuse same intensity value
+    variables["colors"] = [COLOR_YELLOW, COLOR_LIGHT_GREY]
     variables["color_weights"] = [yellow_weight, white_weight]
 
     simulate_lighting(variables)
 
 def simulate_sunrise(variables):
+    """Simulate sunrise transition from night (blue) to day (yellow)."""
     percentage = variables.get("sunrise_percentage", 0)
     percentage = max(0.0, min(1.0, percentage))
     transition_row = floor((1.0 - percentage) * MATRIX_HEIGHT)
@@ -287,22 +310,13 @@ def simulate_sunrise(variables):
     for y in range(MATRIX_HEIGHT):
         for x in range(MATRIX_WIDTH):
             index = get_led_index(x, y)
-
-            if y >= transition_row:
-                r = 255
-                g = 223
-                b = 0
-            else:
-                r = 0
-                g = 0
-                b = 139
-
-            pixels[index] = (r, g, b)
+            pixels[index] = COLOR_YELLOW if y >= transition_row else COLOR_DARK_BLUE
 
     pixels.show()
     time.sleep(0.1)
 
 def simulate_sunset(variables):
+    """Simulate sunset transition from day (yellow) to night (blue)."""
     percentage = variables.get("sunset_percentage", 0)
     percentage = max(0.0, min(1.0, percentage))
     transition_row = floor(percentage * MATRIX_HEIGHT)
@@ -310,17 +324,7 @@ def simulate_sunset(variables):
     for y in range(MATRIX_HEIGHT):
         for x in range(MATRIX_WIDTH):
             index = get_led_index(x, y)
-
-            if y >= transition_row:
-                r = 255
-                g = 223
-                b = 0
-            else:
-                r = 0
-                g = 0
-                b = 139
-
-            pixels[index] = (r, g, b)
+            pixels[index] = COLOR_YELLOW if y >= transition_row else COLOR_DARK_BLUE
 
     pixels.show()
     time.sleep(0.1)
@@ -332,27 +336,31 @@ def variables_changed(current_vars, new_vars, keys_to_check):
     return False
 
 def run_effect(effect_name, variables):
+    """Switch to a new effect if needed."""
     global current_effect_thread, current_effect_name, current_variables, stop_event, pixels
 
-    if current_effect_name != effect_name or variables_changed(current_variables, variables, ["brightness", "cloud_percentage", "sunrise_percentage", "sunset_percentage", "intensity", "weather_condition"]):
-        print("--------------------------------------------")
-        print(f"Switching to effect: {effect_name}")
-        print("--------------------------------------------")
-        print("Variables:")
+    if current_effect_name != effect_name or variables_changed(
+        current_variables, variables,
+        ["brightness", "cloud_percentage", "sunrise_percentage", "sunset_percentage", "intensity", "weather_condition"]
+    ):
+        logger.info("=" * 44)
+        logger.info(f"Switching to effect: {effect_name}")
+        logger.info("=" * 44)
+        logger.debug("Variables:")
         for key, value in variables.items():
-            print(f"\t{key}: {value}")
+            logger.debug(f"  {key}: {value}")
 
-        fadeOut = variables.get("fade_out", True)
-        fadeOutSteps = variables.get("fade_out_steps", 50)
-        fadeOutDelay = variables.get("fade_out_delay", 0.02)
+        fade_out = variables.get("fade_out", True)
+        fade_out_steps = variables.get("fade_out_steps", FADE_OUT_STEPS)
+        fade_out_delay = variables.get("fade_out_delay", FADE_OUT_DELAY)
         brightness = variables.get("brightness", 1.0)
 
         stop_event.set()
         if current_effect_thread:
             current_effect_thread.join()
 
-        if fadeOut:
-            fade_out_all(steps=fadeOutSteps, delay=fadeOutDelay)
+        if fade_out:
+            fade_out_all(steps=fade_out_steps, delay=fade_out_delay)
         pixels.brightness = brightness
 
         stop_event.clear()
@@ -391,18 +399,21 @@ def save_cache(data, weather_data_timestamp):
         json.dump(cache, file)
 
 def get_weather_data():
+    """Fetch weather data from OpenWeather API or cache."""
     cache = load_cache()
     weather_data_timestamp = datetime.datetime.now()
 
     if cache and (weather_data_timestamp - cache["weather_data_timestamp"]).total_seconds() < WEATHER_UPDATE_INTERVAL:
-        print("Use cache")
+        logger.info("Using cached weather data")
         return cache["data"]
 
-    print("Use API")
-    url = OPEN_WEATHER_API_BASE_URL + "q=" + OPEN_WEATHER_API_CITY + "&appid=" + OPEN_WEATHER_API_KEY
-    response = requests.get(url)
+    logger.info("Fetching weather data from API")
+    url = f"{OPEN_WEATHER_API_BASE_URL}q={OPEN_WEATHER_API_CITY}&appid={OPEN_WEATHER_API_KEY}"
 
-    if response.status_code == 200:
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+
         weather_data = response.json()
         result = {
             "weather_data_timestamp": weather_data_timestamp,
@@ -412,92 +423,134 @@ def get_weather_data():
             "cloud_percentage": weather_data['clouds']['all']
         }
         save_cache(result, weather_data_timestamp)
+        logger.info(f"Weather data fetched: {result['weather_condition']}, clouds: {result['cloud_percentage']}%")
         return result
-    else:
-        raise RuntimeError(f"Unable to load weather data. Status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch weather data: {e}")
+        if cache:
+            logger.warning("Falling back to cached data")
+            return cache["data"]
+        else:
+            logger.error("No cached data available, using default values")
+            return {
+                "weather_data_timestamp": weather_data_timestamp,
+                "sunrise": weather_data_timestamp.replace(hour=6, minute=0),
+                "sunset": weather_data_timestamp.replace(hour=18, minute=0),
+                "weather_condition": "Clear",
+                "cloud_percentage": 0
+            }
+    except (KeyError, ValueError) as e:
+        logger.error(f"Error parsing weather data: {e}")
+        if cache:
+            logger.warning("Falling back to cached data")
+            return cache["data"]
+        raise
 
 if __name__ == "__main__":
-    while True:
-        variables = get_weather_data()
+    logger.info("Starting Skyline LED Weather Display")
+    logger.info(f"Matrix size: {MATRIX_WIDTH}x{MATRIX_HEIGHT} ({NUM_LEDS} LEDs)")
 
-        now = datetime.datetime.now()
-        variables["now"] = now
-        variables["brightness"] = 1
-        variables["sunrise_percentage"] = 1
-        variables["sunset_percentage"] = 0
-        variables["fade_out"] = True
-        variables["is_night"] = False
+    try:
+        while True:
+            try:
+                variables = get_weather_data()
 
-        if now <= variables["sunrise"] or now >= variables["sunset"]:
-            variables["is_night"] = True
-
-        variables["is_christmas"] = (now.month == 12 and now.day == 24 and now.hour >= 18) or (now.month == 12 and now.day in [25, 26])
-        variables["is_new_year"] = now.month == 1 and now.day <= 6
-        sunrise_effect_start = variables["sunrise"] - datetime.timedelta(minutes=30)
-        sunrise_effect_end = variables["sunrise"] + datetime.timedelta(minutes=30)
-        sunset_effect_start = variables["sunset"] - datetime.timedelta(minutes=30)
-        sunset_effect_end = variables["sunset"] + datetime.timedelta(minutes=30)
-
-        print("Updated variables:")
-        for key, value in variables.items():
-            print(f"\t{key}: {value}")
-
-        if variables["is_new_year"]:
-            variables["intensity"] = 30
-            run_effect("simulate_fireworks", variables)
-        elif variables["is_christmas"]:
-            run_effect("simulate_christmas", variables)
-        elif sunrise_effect_start <= now <= sunrise_effect_end:
-            if current_effect_name != "simulate_sunrise":
+                now = datetime.datetime.now()
+                variables["now"] = now
+                variables["brightness"] = 1
+                variables["sunrise_percentage"] = 1
+                variables["sunset_percentage"] = 0
                 variables["fade_out"] = True
-            else:
-                variables["fade_out"] = False
-            total_sunrise_duration = (sunrise_effect_end - sunrise_effect_start).total_seconds()
-            elapsed_time = (now - sunrise_effect_start).total_seconds()
-            sunrise_progress = elapsed_time / total_sunrise_duration
-            variables["sunrise_percentage"] = round(sunrise_progress, 2)
-            variables["brightness"] = 0.05
-            run_effect("simulate_sunrise", variables)
-        elif sunset_effect_start <= now <= sunset_effect_end:
-            if current_effect_name != "simulate_sunset":
-                variables["fade_out"] = True
-            else:
-                variables["fade_out"] = False
-            total_sunset_duration = (sunset_effect_end - sunset_effect_start).total_seconds()
-            elapsed_time = (now - sunset_effect_start).total_seconds()
-            sunset_progress = elapsed_time / total_sunset_duration
-            variables["sunset_percentage"] = round(sunset_progress, 2)
-            variables["brightness"] = 0.05
-            run_effect("simulate_sunset", variables)
-        else:
-            match variables["weather_condition"]:
-                case "Drizzle":
-                    variables["intensity"] = 5
-                    if variables["is_night"]:
-                        variables["brightness"] = 0.5
-                    run_effect("simulate_rain", variables)
-                case "Rain":
-                    variables["intensity"] = 15
-                    if variables["is_night"]:
-                        variables["brightness"] = 0.5
-                    run_effect("simulate_rain", variables)
-                case "Thunder":
-                    variables["intensity"] = 20
-                    if variables["is_night"]:
-                        variables["brightness"] = 0.5
-                    run_effect("simulate_rain", variables)
-                case "Snow":
-                    variables["intensity"] = 5
-                    if variables["is_night"]:
-                        variables["brightness"] = 0.45
-                    else:
-                        variables["brightness"] = 0.9
-                    run_effect("simulate_snow", variables)
-                case _:
-                    if variables["is_night"]:
-                        run_effect("simulate_night", variables)
-                    else:
-                        variables["intensity"] = 30
-                        run_effect("simulate_day", variables)
+                variables["is_night"] = False
 
-        time.sleep(30)
+                if now <= variables["sunrise"] or now >= variables["sunset"]:
+                    variables["is_night"] = True
+
+                variables["is_christmas"] = (
+                    (now.month == CHRISTMAS_MONTH and now.day == CHRISTMAS_EVE_DAY and now.hour >= CHRISTMAS_EVE_HOUR) or
+                    (now.month == CHRISTMAS_MONTH and now.day in [CHRISTMAS_DAY, BOXING_DAY])
+                )
+                variables["is_new_year"] = now.month == NEW_YEAR_MONTH and now.day <= NEW_YEAR_MAX_DAY
+
+                sunrise_effect_start = variables["sunrise"] - datetime.timedelta(minutes=SUNRISE_SUNSET_DURATION)
+                sunrise_effect_end = variables["sunrise"] + datetime.timedelta(minutes=SUNRISE_SUNSET_DURATION)
+                sunset_effect_start = variables["sunset"] - datetime.timedelta(minutes=SUNRISE_SUNSET_DURATION)
+                sunset_effect_end = variables["sunset"] + datetime.timedelta(minutes=SUNRISE_SUNSET_DURATION)
+
+                logger.debug("Updated variables:")
+                for key, value in variables.items():
+                    logger.debug(f"  {key}: {value}")
+
+                if variables["is_new_year"]:
+                    variables["intensity"] = INTENSITY_FIREWORKS
+                    run_effect("simulate_fireworks", variables)
+                elif variables["is_christmas"]:
+                    run_effect("simulate_christmas", variables)
+                elif sunrise_effect_start <= now <= sunrise_effect_end:
+                    if current_effect_name != "simulate_sunrise":
+                        variables["fade_out"] = True
+                    else:
+                        variables["fade_out"] = False
+                    total_sunrise_duration = (sunrise_effect_end - sunrise_effect_start).total_seconds()
+                    elapsed_time = (now - sunrise_effect_start).total_seconds()
+                    sunrise_progress = elapsed_time / total_sunrise_duration
+                    variables["sunrise_percentage"] = round(sunrise_progress, 2)
+                    variables["brightness"] = BRIGHTNESS_SUNRISE_SUNSET
+                    run_effect("simulate_sunrise", variables)
+                elif sunset_effect_start <= now <= sunset_effect_end:
+                    if current_effect_name != "simulate_sunset":
+                        variables["fade_out"] = True
+                    else:
+                        variables["fade_out"] = False
+                    total_sunset_duration = (sunset_effect_end - sunset_effect_start).total_seconds()
+                    elapsed_time = (now - sunset_effect_start).total_seconds()
+                    sunset_progress = elapsed_time / total_sunset_duration
+                    variables["sunset_percentage"] = round(sunset_progress, 2)
+                    variables["brightness"] = BRIGHTNESS_SUNRISE_SUNSET
+                    run_effect("simulate_sunset", variables)
+                else:
+                    match variables["weather_condition"]:
+                        case "Drizzle":
+                            variables["intensity"] = INTENSITY_DRIZZLE
+                            if variables["is_night"]:
+                                variables["brightness"] = BRIGHTNESS_NIGHT
+                            run_effect("simulate_rain", variables)
+                        case "Rain":
+                            variables["intensity"] = INTENSITY_RAIN
+                            if variables["is_night"]:
+                                variables["brightness"] = BRIGHTNESS_NIGHT
+                            run_effect("simulate_rain", variables)
+                        case "Thunder":
+                            variables["intensity"] = INTENSITY_THUNDER
+                            if variables["is_night"]:
+                                variables["brightness"] = BRIGHTNESS_NIGHT
+                            run_effect("simulate_rain", variables)
+                        case "Snow":
+                            variables["intensity"] = INTENSITY_SNOW
+                            if variables["is_night"]:
+                                variables["brightness"] = BRIGHTNESS_SNOW_NIGHT
+                            else:
+                                variables["brightness"] = BRIGHTNESS_SNOW
+                            run_effect("simulate_snow", variables)
+                        case _:
+                            if variables["is_night"]:
+                                run_effect("simulate_night", variables)
+                            else:
+                                variables["intensity"] = INTENSITY_DAY
+                                run_effect("simulate_day", variables)
+
+                time.sleep(MAIN_LOOP_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"Error in main loop: {e}", exc_info=True)
+                time.sleep(MAIN_LOOP_INTERVAL)
+
+    except KeyboardInterrupt:
+        logger.info("Shutting down gracefully...")
+        stop_event.set()
+        if current_effect_thread:
+            current_effect_thread.join(timeout=5)
+        fade_out_all()
+        pixels.fill((0, 0, 0))
+        pixels.show()
+        logger.info("Shutdown complete")
