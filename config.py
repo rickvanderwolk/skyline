@@ -1,5 +1,9 @@
 """Configuration for the Skyline LED weather display."""
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # OpenWeather API configuration
 OPEN_WEATHER_API_KEY = os.getenv("OPEN_WEATHER_API_KEY", "<your-open-weather-api-key>")
